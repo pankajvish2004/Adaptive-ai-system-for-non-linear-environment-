@@ -1,0 +1,164 @@
+import numpy as np
+import matplotlib.pyplot as plt
+from scipy.integrate import solve_ivp
+
+# -------------------- System Definition --------------------
+def non_linear_system(t, y, a_true, b_true, u, d_true):
+  """The non-linear system with unknown parameters and disturbance."""
+  return -a_true * y[0]**3 + b_true * u(t) + d_true
+
+# -------------------- Reference Model --------------------
+def reference_model(t, yr, ar, br, r):
+  """A stable linear system representing the desired behavior."""
+  return -ar * yr[0] + br * r(t)
+
+# -------------------- Adaptive Controller --------------------
+class AdaptiveController:
+  def __init__(self, initial_a_hat, initial_b_hat, gamma_a, gamma_b, k_r):
+    """
+    Initializes the adaptive controller.
+
+    Args:
+        initial_a_hat (float): Initial estimate of parameter 'a'.
+        initial_b_hat (float): Initial estimate of parameter 'b'.
+        gamma_a (float): Adaptation gain for 'a_hat'.
+        gamma_b (float): Adaptation gain for 'b_hat'.
+        k_r (float): gain for reference input
+    """
+    self.a_hat = initial_a_hat
+    self.b_hat = initial_b_hat
+    self.gamma_a = gamma_a
+    self.gamma_b = gamma_b
+    self.k_r = k_r
+
+  def control_law(self, t, y, yr):
+    """
+    Generates the control input based on estimated parameters.
+    u = kr*r - a_hat/b_hat * y
+    """
+    if abs(self.b_hat) < 1e-6:  # Avoid division by zero
+      return 0.0
+    u = (self.k_r * r(t) - self.a_hat * y[0]**3) / self.b_hat
+    return u
+
+  def update_parameters(self, t, y, yr, u):
+    """Updates parameter estimates using a gradient-based method."""
+    error = yr[0] - y[0]
+    self.a_hat += self.gamma_a * error * y[0]**3
+    self.b_hat += self.gamma_b * error * u(t)
+
+# -------------------- Simulation Setup --------------------
+# True system parameters (unknown to the controller)
+a_true = 1.5
+b_true = 2.0
+d_true = 0.5  # Unknown disturbance
+
+# Reference model parameters (desired behavior)
+ar = 3.0
+br = 3.0
+
+# Initial conditions
+y0 = [0.1]  # System initial condition
+yr0 = [0.0] # Reference model initial condition
+
+# Time span and time step
+t_span = [0, 10]
+dt = 0.01
+t_eval = np.arange(t_span[0], t_span[1], dt)
+
+# Reference input signal (r(t))
+def r(t):
+  return np.sin(t)
+
+# Adaptive controller parameters
+initial_a_hat = 0.1
+initial_b_hat = 0.5
+gamma_a = 0.1
+gamma_b = 0.2
+k_r = br/b_true #деальт with unknown b
+
+# Create the adaptive controller instance
+controller = AdaptiveController(initial_a_hat, initial_b_hat, gamma_a, gamma_b, k_r)
+
+# Store simulation results
+time_history = []
+output_history = []
+reference_history = []
+control_history = []
+a_hat_history = []
+b_hat_history = []
+
+# -------------------- Simulation Loop --------------------
+current_state = y0
+reference_state = yr0
+
+def get_control_input(t, y, yr):
+  u = controller.control_law(t, y, yr)
+  return u
+
+for t in t_eval:
+  # Get control input
+  control_signal = get_control_input(t, current_state, reference_state)
+
+  # Update parameter estimates
+  controller.update_parameters(t, current_state, reference_state, lambda tau: get_control_input(tau, current_state, reference_state))
+
+  # Simulate the system and the reference model
+  sys_sol = solve_ivp(
+      non_linear_system,
+      [t, t + dt],
+      current_state,
+      args=(a_true, b_true, lambda tau: control_signal, d_true),
+      dense_output=True,
+  )
+  current_state = sys_sol.y[:, -1]
+
+  ref_sol = solve_ivp(
+      reference_model,
+      [t, t + dt],
+      reference_state,
+      args=(ar, br, r),
+      dense_output=True,
+  )
+  reference_state = ref_sol.y[:, -1]
+
+  # Store results
+  time_history.append(t)
+  output_history.append(current_state[0])
+  reference_history.append(reference_state[0])
+  control_history.append(control_signal)
+  a_hat_history.append(controller.a_hat)
+  b_hat_history.append(controller.b_hat)
+
+# -------------------- Plotting Results --------------------
+plt.figure(figsize=(12, 8))
+
+plt.subplot(3, 1, 1)
+plt.plot(time_history, output_history, label="System Output (y)")
+plt.plot(time_history, reference_history, "--", label="Reference Output (yr)")
+plt.title("System Output and Reference Model")
+plt.xlabel("Time")
+plt.ylabel("Output")
+plt.legend()
+plt.grid(True)
+
+plt.subplot(3, 1, 2)
+plt.plot(time_history, control_history, label="Control Input (u)")
+plt.title("Control Input")
+plt.xlabel("Time")
+plt.ylabel("Control")
+plt.grid(True)
+
+plt.subplot(3, 1, 3)
+plt.plot(time_history, a_hat_history, label="Estimated a (a_hat)")
+plt.plot(time_history, [a_true] * len(time_history), "--", label="True a")
+plt.plot(time_history, b_hat_history, label="Estimated b (b_hat)")
+plt.plot(time_history, [b_true] * len(time_history), "--", label="True b")
+plt.title("Parameter Estimation")
+plt.xlabel("Time")
+plt.ylabel("Parameter Value")
+plt.legend()
+plt.grid(True)
+
+plt.tight_layout()
+plt.show()
